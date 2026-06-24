@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\User;
+use Illuminate\Support\Facades\Http;
 
 test('a user can register and receives a token', function () {
     $response = $this->postJson('/api/register', [
@@ -93,16 +94,27 @@ test('an authenticated user can create a match room', function () {
     $user = User::factory()->create();
     $token = $user->createToken('mobile')->plainTextToken;
 
+    // The room lifecycle now lives in the Node engine; we mock its response.
+    Http::fake([
+        rtrim((string) config('services.node.url'), '/').'/rooms' => Http::response([
+            'code' => 'WXYZ1',
+            'matchId' => 'node-match',
+            'roster' => [
+                ['userId' => (string) $user->id, 'name' => $user->name, 'seatIndex' => 0, 'engineId' => 'e0', 'isAI' => false],
+            ],
+        ]),
+    ]);
+
     $response = $this->withHeader('Authorization', "Bearer {$token}")
         ->postJson('/api/matches', ['settings' => ['max_players' => 4]])
         ->assertCreated()
-        ->assertJsonStructure(['match' => ['id', 'code']]);
+        ->assertJsonStructure(['code', 'matchId', 'roster']);
 
-    $code = $response->json('match.code');
-    expect($code)->toMatch('/^[A-Z0-9]{5}$/');
+    expect($response->json('code'))->toMatch('/^[A-Z0-9]{5}$/');
 
     $this->assertDatabaseHas('matches', [
-        'id' => $response->json('match.id'),
+        'id' => $response->json('matchId'),
         'status' => 'lobby',
+        'host_user_id' => $user->id,
     ]);
 });

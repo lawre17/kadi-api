@@ -20,9 +20,7 @@ class ReverbPing implements ShouldBroadcastNow
     use InteractsWithSockets;
     use SerializesModels;
 
-    public function __construct(public string $message)
-    {
-    }
+    public function __construct(public string $message) {}
 
     public function broadcastOn(): Channel
     {

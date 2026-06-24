@@ -1,7 +1,7 @@
 <?php
 
 use App\Http\Controllers\AuthController;
-use App\Http\Controllers\MatchController;
+use App\Http\Controllers\MatchPlayController;
 use Illuminate\Support\Facades\Route;
 
 // Public auth endpoints.
@@ -12,5 +12,11 @@ Route::post('/login', [AuthController::class, 'login']);
 Route::middleware('auth:sanctum')->group(function () {
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::get('/me', [AuthController::class, 'me']);
-    Route::post('/matches', [MatchController::class, 'store']);
+
+    // Multiplayer match orchestration. Authoritative logic lives in the Node
+    // engine; these endpoints relay moves and broadcast the results.
+    Route::post('/matches', [MatchPlayController::class, 'store']);
+    Route::post('/matches/{code}/join', [MatchPlayController::class, 'join']);
+    Route::post('/matches/{matchId}/start', [MatchPlayController::class, 'start']);
+    Route::post('/matches/{matchId}/move', [MatchPlayController::class, 'move']);
 });

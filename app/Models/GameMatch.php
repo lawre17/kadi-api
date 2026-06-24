@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
-#[Fillable(['id', 'status', 'winner_user_id', 'settings', 'started_at', 'finished_at'])]
+#[Fillable(['id', 'status', 'host_user_id', 'winner_user_id', 'settings', 'started_at', 'finished_at'])]
 class GameMatch extends Model
 {
     protected $table = 'matches';

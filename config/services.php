@@ -39,4 +39,9 @@ return [
         'secret' => env('INTERNAL_SECRET', 'dev-kadi-secret-change-me'),
     ],
 
+    'node' => [
+        'url' => env('NODE_ENGINE_URL', 'http://127.0.0.1:3001'),
+        'secret' => env('INTERNAL_SECRET', 'dev-kadi-secret-change-me'),
+    ],
+
 ];

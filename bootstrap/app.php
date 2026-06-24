@@ -11,7 +11,6 @@ return Application::configure(basePath: dirname(__DIR__))
         web: __DIR__.'/../routes/web.php',
         api: __DIR__.'/../routes/api.php',
         commands: __DIR__.'/../routes/console.php',
-        channels: __DIR__.'/../routes/channels.php',
         health: '/up',
         then: function (): void {
             // Internal routes live at the root (e.g. /internal/award-win),
@@ -20,6 +19,12 @@ return Application::configure(basePath: dirname(__DIR__))
             Route::middleware('api')
                 ->group(base_path('routes/internal.php'));
         },
+    )
+    // Guard /broadcasting/auth with Sanctum so the RN client can authorize
+    // private-channel subscriptions using its bearer token.
+    ->withBroadcasting(
+        __DIR__.'/../routes/channels.php',
+        ['middleware' => ['auth:sanctum']],
     )
     ->withMiddleware(function (Middleware $middleware): void {
         //

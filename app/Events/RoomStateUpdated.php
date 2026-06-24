@@ -1,0 +1,37 @@
+<?php
+
+namespace App\Events;
+
+use Illuminate\Broadcasting\InteractsWithSockets;
+use Illuminate\Broadcasting\PrivateChannel;
+use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
+use Illuminate\Foundation\Events\Dispatchable;
+use Illuminate\Queue\SerializesModels;
+
+class RoomStateUpdated implements ShouldBroadcastNow
+{
+    use Dispatchable, InteractsWithSockets, SerializesModels;
+
+    /**
+     * @param  array<int, mixed>  $roster
+     */
+    public function __construct(public string $matchId, public array $roster) {}
+
+    public function broadcastOn(): PrivateChannel
+    {
+        return new PrivateChannel("match.{$this->matchId}");
+    }
+
+    public function broadcastAs(): string
+    {
+        return 'roomState';
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function broadcastWith(): array
+    {
+        return ['roster' => $this->roster];
+    }
+}
