@@ -65,6 +65,15 @@ return [
             'replace_placeholders' => true,
         ],
 
+        // Dedicated multiplayer flow log: rooms, joins, starts, moves, awards,
+        // and engine/broadcast failures. Tail storage/logs/game.log.
+        'game' => [
+            'driver' => 'single',
+            'path' => storage_path('logs/game.log'),
+            'level' => 'debug',
+            'replace_placeholders' => true,
+        ],
+
         'daily' => [
             'driver' => 'daily',
             'path' => storage_path('logs/laravel.log'),

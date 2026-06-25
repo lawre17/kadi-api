@@ -11,10 +11,19 @@ use App\Models\MatchPlayer;
 use App\Services\NodeEngine;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 class MatchPlayController extends Controller
 {
     public function __construct(private readonly NodeEngine $engine) {}
+
+    /**
+     * @param  array<string, mixed>  $ctx
+     */
+    private function glog(string $msg, array $ctx = []): void
+    {
+        Log::channel('game')->info($msg, $ctx);
+    }
 
     /**
      * Create a room. The Node engine is authoritative for game ids; we mirror
@@ -52,6 +61,14 @@ class MatchPlayController extends Controller
 
         broadcast(new RoomStateUpdated($matchId, $roster));
 
+        $this->glog('room created', [
+            'matchId' => $matchId,
+            'code' => $result['code'],
+            'host' => $user->id,
+            'name' => $user->name,
+            'ai' => $validated['aiOpponents'] ?? 0,
+        ]);
+
         return response()->json([
             'code' => $result['code'],
             'matchId' => $matchId,
@@ -74,6 +91,14 @@ class MatchPlayController extends Controller
         $this->syncRoster($matchId, $roster);
 
         broadcast(new RoomStateUpdated($matchId, $roster));
+
+        $this->glog('player joined', [
+            'matchId' => $matchId,
+            'code' => $code,
+            'user' => $user->id,
+            'name' => $user->name,
+            'players' => count($roster),
+        ]);
 
         return response()->json([
             'matchId' => $matchId,
@@ -105,6 +130,12 @@ class MatchPlayController extends Controller
             broadcast(new GameStateUpdated($matchId, $states[0]));
         }
 
+        $this->glog('game started', [
+            'matchId' => $matchId,
+            'host' => $user->id,
+            'players' => count($roster),
+        ]);
+
         return response()->json([
             'matchId' => $matchId,
             'roster' => $roster,
@@ -131,11 +162,32 @@ class MatchPlayController extends Controller
             return response()->json(['message' => 'You are not a participant of this match.'], 403);
         }
 
-        $result = $this->engine->move($matchId, $user->id, $validated['move']);
+        $moveType = $validated['move']['type'] ?? 'unknown';
+
+        try {
+            $result = $this->engine->move($matchId, $user->id, $validated['move']);
+        } catch (\Throwable $e) {
+            Log::channel('game')->warning('move rejected', [
+                'matchId' => $matchId,
+                'user' => $user->id,
+                'move' => $moveType,
+                'error' => $e->getMessage(),
+            ]);
+            throw $e;
+        }
 
         $states = $result['states'] ?? [];
         $finished = (bool) ($result['finished'] ?? false);
         $winnerUserId = $result['winnerUserId'] ?? null;
+
+        $this->glog('move', [
+            'matchId' => $matchId,
+            'user' => $user->id,
+            'move' => $moveType,
+            'states' => count($states),
+            'finished' => $finished,
+            'winner' => $winnerUserId,
+        ]);
 
         // Broadcast every intermediate/final state in order.
         foreach ($states as $state) {
@@ -156,6 +208,12 @@ class MatchPlayController extends Controller
             $award = $awardMatchWin->handle($matchId, $winnerId, $participantIds, $settings);
 
             broadcast(new MatchAwarded($matchId, $award['winner_user_id'], $award['coins']));
+
+            $this->glog('coins awarded', [
+                'matchId' => $matchId,
+                'winner' => $winnerId,
+                'coins' => $award['coins'],
+            ]);
 
             return response()->json([
                 'ok' => true,
