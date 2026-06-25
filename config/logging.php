@@ -68,9 +68,10 @@ return [
         // Dedicated multiplayer flow log: rooms, joins, starts, moves, awards,
         // and engine/broadcast failures. Tail storage/logs/game.log.
         'game' => [
-            'driver' => 'single',
+            'driver' => 'daily',
             'path' => storage_path('logs/game.log'),
             'level' => 'debug',
+            'days' => 7,
             'replace_placeholders' => true,
         ],
 

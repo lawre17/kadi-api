@@ -218,6 +218,17 @@ class MatchPlayController extends Controller
                 'coins' => $award['coins'],
             ]);
 
+            // Primary voice-clip cleanup: the game is over, so its clips are no
+            // longer needed. Never let cleanup failure break the move response.
+            try {
+                Storage::disk('public')->deleteDirectory("voice/{$matchId}");
+            } catch (\Throwable $e) {
+                Log::channel('game')->warning('voice cleanup failed', [
+                    'matchId' => $matchId,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
             return response()->json([
                 'ok' => true,
                 'finished' => true,
@@ -259,8 +270,10 @@ class MatchPlayController extends Controller
             return response()->json(['message' => 'You are not a participant of this match.'], 403);
         }
 
+        // Group clips by match so they can be deleted as a unit when the game
+        // ends (see move()), and so the backstop prune can reason per-match.
         $path = $request->file('clip')->storePubliclyAs(
-            'voice',
+            "voice/{$matchId}",
             Str::uuid().'.m4a',
             'public',
         );
