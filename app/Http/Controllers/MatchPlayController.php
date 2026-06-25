@@ -230,6 +230,31 @@ class MatchPlayController extends Controller
     }
 
     /**
+     * Current authoritative state + roster for a match. Clients call this when
+     * they open the game so they render immediately instead of waiting for the
+     * next broadcast.
+     */
+    public function state(Request $request, string $matchId): JsonResponse
+    {
+        $user = $request->user();
+
+        $isParticipant = MatchPlayer::where('match_id', $matchId)
+            ->where('user_id', $user->id)
+            ->exists();
+
+        if (! $isParticipant) {
+            return response()->json(['message' => 'You are not a participant of this match.'], 403);
+        }
+
+        $result = $this->engine->getState($matchId);
+
+        return response()->json([
+            'state' => $result['state'] ?? null,
+            'roster' => $result['roster'] ?? [],
+        ]);
+    }
+
+    /**
      * Mirror the engine roster into match_players for channel auth and awards.
      *
      * @param  array<int, array<string, mixed>>  $roster
