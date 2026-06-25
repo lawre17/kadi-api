@@ -6,12 +6,15 @@ use App\Actions\AwardMatchWin;
 use App\Events\GameStateUpdated;
 use App\Events\MatchAwarded;
 use App\Events\RoomStateUpdated;
+use App\Events\VoiceMessage;
 use App\Models\GameMatch;
 use App\Models\MatchPlayer;
 use App\Services\NodeEngine;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 
 class MatchPlayController extends Controller
 {
@@ -227,6 +230,54 @@ class MatchPlayController extends Controller
             'finished' => $finished,
             'winnerUserId' => $winnerUserId,
         ]);
+    }
+
+    /**
+     * Accept a short push-to-talk voice clip from a participant, store it on the
+     * public disk, and broadcast its URL to the room so other players auto-play
+     * it. Additive — does not touch gameplay/coins.
+     */
+    public function voice(Request $request, string $matchId): JsonResponse
+    {
+        $request->validate([
+            'clip' => [
+                'required',
+                'file',
+                'mimetypes:audio/mp4,audio/aac,audio/m4a,audio/mpeg,audio/x-m4a,application/octet-stream',
+                'max:2048',
+            ],
+        ]);
+
+        $user = $request->user();
+
+        // Must be a participant of this match.
+        $isParticipant = MatchPlayer::where('match_id', $matchId)
+            ->where('user_id', $user->id)
+            ->exists();
+
+        if (! $isParticipant) {
+            return response()->json(['message' => 'You are not a participant of this match.'], 403);
+        }
+
+        $path = $request->file('clip')->storePubliclyAs(
+            'voice',
+            Str::uuid().'.m4a',
+            'public',
+        );
+
+        // Force https — APP_URL is http on this host, but the site is https-only
+        // and Android's media player won't follow an http->https redirect.
+        $url = preg_replace('#^http://#', 'https://', Storage::disk('public')->url($path));
+
+        broadcast(new VoiceMessage($matchId, (int) $user->id, $user->name, $url));
+
+        $this->glog('voice', [
+            'matchId' => $matchId,
+            'user' => $user->id,
+            'url' => $url,
+        ]);
+
+        return response()->json(['url' => $url]);
     }
 
     /**
