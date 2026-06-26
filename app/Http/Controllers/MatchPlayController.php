@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Actions\AwardMatchWin;
+use App\Events\ChatMessage;
 use App\Events\GameStateUpdated;
 use App\Events\MatchAwarded;
 use App\Events\RoomStateUpdated;
@@ -291,6 +292,46 @@ class MatchPlayController extends Controller
         ]);
 
         return response()->json(['url' => $url]);
+    }
+
+    /**
+     * Relay a short text chat message to the room. Ephemeral — broadcast only,
+     * never stored (nothing to accumulate on the server). Additive: does not
+     * touch gameplay or coins.
+     */
+    public function chat(Request $request, string $matchId): JsonResponse
+    {
+        $validated = $request->validate([
+            'text' => ['required', 'string', 'max:200'],
+        ]);
+
+        $user = $request->user();
+
+        // Must be a participant of this match.
+        $isParticipant = MatchPlayer::where('match_id', $matchId)
+            ->where('user_id', $user->id)
+            ->exists();
+
+        if (! $isParticipant) {
+            return response()->json(['message' => 'You are not a participant of this match.'], 403);
+        }
+
+        // Collapse whitespace and hard-trim so a giant blob can't be forced past
+        // the 200-char cap via newlines.
+        $text = trim(preg_replace('/\s+/', ' ', $validated['text']) ?? '');
+
+        if ($text === '') {
+            return response()->json(['message' => 'Empty message.'], 422);
+        }
+
+        broadcast(new ChatMessage($matchId, (int) $user->id, $user->name, $text));
+
+        $this->glog('chat', [
+            'matchId' => $matchId,
+            'user' => $user->id,
+        ]);
+
+        return response()->json(['ok' => true]);
     }
 
     /**

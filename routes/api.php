@@ -21,6 +21,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/matches/{matchId}/move', [MatchPlayController::class, 'move']);
     // Push-to-talk voice clip: stored on the public disk + broadcast to the room.
     Route::post('/matches/{matchId}/voice', [MatchPlayController::class, 'voice']);
+    // Text chat: ephemeral, broadcast-only (not stored).
+    Route::post('/matches/{matchId}/chat', [MatchPlayController::class, 'chat']);
     // Fetch the current authoritative state — used when a client opens the game
     // (so it doesn't depend on catching the one-time initial broadcast).
     Route::get('/matches/{matchId}/state', [MatchPlayController::class, 'state']);
