@@ -5,10 +5,6 @@ use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schedule;
 
-// Backstop voice-clip cleanup for abandoned games (the main cleanup is inline on
-// game-finish in MatchPlayController). Requires the Forge scheduler cron to run.
-Schedule::command('voice:prune')->hourly();
-
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');

@@ -80,6 +80,26 @@ class NodeEngine
     }
 
     /**
+     * @return array{states: array<int, mixed>, finished: bool, winnerUserId: string|null}
+     */
+    public function leave(string $matchId, int $userId): array
+    {
+        return $this->send($this->client()->post("/matches/{$matchId}/leave", [
+            'userId' => $userId,
+        ]));
+    }
+
+    /**
+     * @return array{skipped: bool, states: array<int, mixed>, finished: bool, winnerUserId: string|null}
+     */
+    public function timeout(string $matchId, int $userId): array
+    {
+        return $this->send($this->client()->post("/matches/{$matchId}/timeout", [
+            'userId' => $userId,
+        ]));
+    }
+
+    /**
      * Translate Node 4xx into a 422 ValidationException; throw on 5xx.
      *
      * @return array<string, mixed>

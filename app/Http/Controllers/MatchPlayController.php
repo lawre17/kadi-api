@@ -7,15 +7,12 @@ use App\Events\ChatMessage;
 use App\Events\GameStateUpdated;
 use App\Events\MatchAwarded;
 use App\Events\RoomStateUpdated;
-use App\Events\VoiceMessage;
 use App\Models\GameMatch;
 use App\Models\MatchPlayer;
 use App\Services\NodeEngine;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
-use Illuminate\Support\Str;
 
 class MatchPlayController extends Controller
 {
@@ -193,7 +190,28 @@ class MatchPlayController extends Controller
             'winner' => $winnerUserId,
         ]);
 
-        // Broadcast every intermediate/final state in order.
+        $this->dispatchEngineResult($matchId, $states, $finished, $winnerUserId, $awardMatchWin);
+
+        return response()->json([
+            'ok' => true,
+            'finished' => $finished,
+            'winnerUserId' => $winnerUserId !== null ? (int) $winnerUserId : null,
+        ]);
+    }
+
+    /**
+     * Broadcast each engine state in order and, if the game finished, award the
+     * winner + clean up. Shared by move(), leave(), and timeout().
+     *
+     * @param  array<int, mixed>  $states
+     */
+    private function dispatchEngineResult(
+        string $matchId,
+        array $states,
+        bool $finished,
+        mixed $winnerUserId,
+        AwardMatchWin $awardMatchWin,
+    ): void {
         foreach ($states as $state) {
             broadcast(new GameStateUpdated($matchId, $state));
         }
@@ -218,51 +236,21 @@ class MatchPlayController extends Controller
                 'winner' => $winnerId,
                 'coins' => $award['coins'],
             ]);
-
-            // Primary voice-clip cleanup: the game is over, so its clips are no
-            // longer needed. Never let cleanup failure break the move response.
-            try {
-                Storage::disk('public')->deleteDirectory("voice/{$matchId}");
-            } catch (\Throwable $e) {
-                Log::channel('game')->warning('voice cleanup failed', [
-                    'matchId' => $matchId,
-                    'error' => $e->getMessage(),
-                ]);
-            }
-
-            return response()->json([
-                'ok' => true,
-                'finished' => true,
-                'winnerUserId' => $winnerId,
-            ]);
         }
 
-        return response()->json([
-            'ok' => true,
-            'finished' => $finished,
-            'winnerUserId' => $winnerUserId,
-        ]);
+        if ($finished) {
+            GameMatch::where('id', $matchId)->update(['status' => 'finished']);
+        }
     }
 
     /**
-     * Accept a short push-to-talk voice clip from a participant, store it on the
-     * public disk, and broadcast its URL to the room so other players auto-play
-     * it. Additive — does not touch gameplay/coins.
+     * A player leaves/forfeits the match. The engine ends a 2-player game in the
+     * other player's favour, or skips the seat in a 3+ game.
      */
-    public function voice(Request $request, string $matchId): JsonResponse
+    public function leave(Request $request, string $matchId, AwardMatchWin $awardMatchWin): JsonResponse
     {
-        $request->validate([
-            'clip' => [
-                'required',
-                'file',
-                'mimetypes:audio/mp4,audio/aac,audio/m4a,audio/mpeg,audio/x-m4a,application/octet-stream',
-                'max:2048',
-            ],
-        ]);
-
         $user = $request->user();
 
-        // Must be a participant of this match.
         $isParticipant = MatchPlayer::where('match_id', $matchId)
             ->where('user_id', $user->id)
             ->exists();
@@ -271,27 +259,60 @@ class MatchPlayController extends Controller
             return response()->json(['message' => 'You are not a participant of this match.'], 403);
         }
 
-        // Group clips by match so they can be deleted as a unit when the game
-        // ends (see move()), and so the backstop prune can reason per-match.
-        $path = $request->file('clip')->storePubliclyAs(
-            "voice/{$matchId}",
-            Str::uuid().'.m4a',
-            'public',
-        );
+        $result = $this->engine->leave($matchId, $user->id);
 
-        // Force https — APP_URL is http on this host, but the site is https-only
-        // and Android's media player won't follow an http->https redirect.
-        $url = preg_replace('#^http://#', 'https://', Storage::disk('public')->url($path));
-
-        broadcast(new VoiceMessage($matchId, (int) $user->id, $user->name, $url));
-
-        $this->glog('voice', [
+        $this->glog('player left', [
             'matchId' => $matchId,
             'user' => $user->id,
-            'url' => $url,
+            'finished' => $result['finished'] ?? false,
+            'winner' => $result['winnerUserId'] ?? null,
         ]);
 
-        return response()->json(['url' => $url]);
+        $this->dispatchEngineResult(
+            $matchId,
+            $result['states'] ?? [],
+            (bool) ($result['finished'] ?? false),
+            $result['winnerUserId'] ?? null,
+            $awardMatchWin,
+        );
+
+        return response()->json(['ok' => true]);
+    }
+
+    /**
+     * Any waiting participant can ask to skip the current player once they've
+     * stalled past the engine's turn timeout. The engine is the clock — a
+     * premature request is a harmless no-op.
+     */
+    public function timeout(Request $request, string $matchId, AwardMatchWin $awardMatchWin): JsonResponse
+    {
+        $user = $request->user();
+
+        $isParticipant = MatchPlayer::where('match_id', $matchId)
+            ->where('user_id', $user->id)
+            ->exists();
+
+        if (! $isParticipant) {
+            return response()->json(['message' => 'You are not a participant of this match.'], 403);
+        }
+
+        $result = $this->engine->timeout($matchId, $user->id);
+
+        if ($result['skipped'] ?? false) {
+            $this->glog('turn timed out', [
+                'matchId' => $matchId,
+                'by' => $user->id,
+            ]);
+            $this->dispatchEngineResult(
+                $matchId,
+                $result['states'] ?? [],
+                (bool) ($result['finished'] ?? false),
+                $result['winnerUserId'] ?? null,
+                $awardMatchWin,
+            );
+        }
+
+        return response()->json(['ok' => true, 'skipped' => $result['skipped'] ?? false]);
     }
 
     /**
