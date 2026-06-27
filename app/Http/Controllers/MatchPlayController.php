@@ -29,6 +29,23 @@ class MatchPlayController extends Controller
     }
 
     /**
+     * Broadcast an event without ever failing the request. A realtime hiccup
+     * (e.g. a too-large payload) must not 500 a move — clients also re-sync via
+     * polling, so a dropped broadcast self-heals.
+     */
+    private function safeBroadcast(object $event): void
+    {
+        try {
+            broadcast($event);
+        } catch (\Throwable $e) {
+            Log::channel('game')->warning('broadcast failed', [
+                'event' => class_basename($event),
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
      * Create a room. The Node engine is authoritative for game ids; we mirror
      * a 'lobby' match row + the host's player row for channel auth / awards.
      */
@@ -62,7 +79,7 @@ class MatchPlayController extends Controller
 
         $this->syncRoster($matchId, $roster);
 
-        broadcast(new RoomStateUpdated($matchId, $roster));
+        $this->safeBroadcast(new RoomStateUpdated($matchId, $roster));
 
         $this->glog('room created', [
             'matchId' => $matchId,
@@ -93,7 +110,7 @@ class MatchPlayController extends Controller
 
         $this->syncRoster($matchId, $roster);
 
-        broadcast(new RoomStateUpdated($matchId, $roster));
+        $this->safeBroadcast(new RoomStateUpdated($matchId, $roster));
 
         $this->glog('player joined', [
             'matchId' => $matchId,
@@ -130,7 +147,7 @@ class MatchPlayController extends Controller
 
         // Broadcast the initial state to the room.
         if (! empty($states)) {
-            broadcast(new GameStateUpdated($matchId, $states[0]));
+            $this->safeBroadcast(new GameStateUpdated($matchId, $states[0]));
         }
 
         $this->glog('game started', [
@@ -215,7 +232,7 @@ class MatchPlayController extends Controller
         AwardMatchWin $awardMatchWin,
     ): void {
         foreach ($states as $state) {
-            broadcast(new GameStateUpdated($matchId, $state));
+            $this->safeBroadcast(new GameStateUpdated($matchId, $state));
         }
 
         if ($finished && $winnerUserId !== null) {
@@ -231,7 +248,7 @@ class MatchPlayController extends Controller
 
             $award = $awardMatchWin->handle($matchId, $winnerId, $participantIds, $settings);
 
-            broadcast(new MatchAwarded($matchId, $award['winner_user_id'], $award['coins']));
+            $this->safeBroadcast(new MatchAwarded($matchId, $award['winner_user_id'], $award['coins']));
 
             $this->glog('coins awarded', [
                 'matchId' => $matchId,
@@ -337,7 +354,7 @@ class MatchPlayController extends Controller
         $result = $this->engine->rematch($matchId, $user->id);
 
         // Tell everyone on the (old) channel the current readiness.
-        broadcast(new RematchUpdate(
+        $this->safeBroadcast(new RematchUpdate(
             $matchId,
             $result['ready'] ?? [],
             (int) ($result['total'] ?? 0),
@@ -362,9 +379,9 @@ class MatchPlayController extends Controller
 
             // Initial state on the NEW channel, and a jump-in signal on the OLD one.
             foreach ($result['states'] ?? [] as $state) {
-                broadcast(new GameStateUpdated($newId, $state));
+                $this->safeBroadcast(new GameStateUpdated($newId, $state));
             }
-            broadcast(new RematchStarted($matchId, $newId, $roster));
+            $this->safeBroadcast(new RematchStarted($matchId, $newId, $roster));
 
             $this->glog('rematch started', [
                 'from' => $matchId,
@@ -412,7 +429,7 @@ class MatchPlayController extends Controller
             return response()->json(['message' => 'Empty message.'], 422);
         }
 
-        broadcast(new ChatMessage($matchId, (int) $user->id, $user->name, $text));
+        $this->safeBroadcast(new ChatMessage($matchId, (int) $user->id, $user->name, $text));
 
         $this->glog('chat', [
             'matchId' => $matchId,
