@@ -6,6 +6,8 @@ use App\Actions\AwardMatchWin;
 use App\Events\ChatMessage;
 use App\Events\GameStateUpdated;
 use App\Events\MatchAwarded;
+use App\Events\RematchStarted;
+use App\Events\RematchUpdate;
 use App\Events\RoomStateUpdated;
 use App\Models\GameMatch;
 use App\Models\MatchPlayer;
@@ -313,6 +315,71 @@ class MatchPlayController extends Controller
         }
 
         return response()->json(['ok' => true, 'skipped' => $result['skipped'] ?? false]);
+    }
+
+    /**
+     * A participant of a finished match opts into a rematch. When everyone left
+     * standing has opted in, the engine spins up a fresh room with the same
+     * players; we mirror its rows and tell every client to jump into it.
+     */
+    public function rematch(Request $request, string $matchId): JsonResponse
+    {
+        $user = $request->user();
+
+        $isParticipant = MatchPlayer::where('match_id', $matchId)
+            ->where('user_id', $user->id)
+            ->exists();
+
+        if (! $isParticipant) {
+            return response()->json(['message' => 'You are not a participant of this match.'], 403);
+        }
+
+        $result = $this->engine->rematch($matchId, $user->id);
+
+        // Tell everyone on the (old) channel the current readiness.
+        broadcast(new RematchUpdate(
+            $matchId,
+            $result['ready'] ?? [],
+            (int) ($result['total'] ?? 0),
+            (bool) ($result['cannot'] ?? false),
+        ));
+
+        if ($result['started'] ?? false) {
+            $newId = (string) $result['newMatchId'];
+            $roster = $result['roster'] ?? [];
+
+            // Mirror the new match so channel auth + awards work for it.
+            GameMatch::updateOrCreate(
+                ['id' => $newId],
+                [
+                    'status' => 'playing',
+                    'host_user_id' => (int) $result['hostUserId'],
+                    'settings' => GameMatch::where('id', $matchId)->value('settings'),
+                    'started_at' => now(),
+                ],
+            );
+            $this->syncRoster($newId, $roster);
+
+            // Initial state on the NEW channel, and a jump-in signal on the OLD one.
+            foreach ($result['states'] ?? [] as $state) {
+                broadcast(new GameStateUpdated($newId, $state));
+            }
+            broadcast(new RematchStarted($matchId, $newId, $roster));
+
+            $this->glog('rematch started', [
+                'from' => $matchId,
+                'to' => $newId,
+                'host' => $result['hostUserId'] ?? null,
+            ]);
+        }
+
+        return response()->json([
+            'ok' => true,
+            'started' => $result['started'] ?? false,
+            'newMatchId' => $result['newMatchId'] ?? null,
+            'roster' => $result['roster'] ?? [],
+            'cannot' => $result['cannot'] ?? false,
+        ]);
     }
 
     /**

@@ -100,6 +100,16 @@ class NodeEngine
     }
 
     /**
+     * @return array{started: bool, ready: array<int, string>, total: int, newMatchId: string|null, code: string|null, hostUserId: string|null, roster: array<int, array<string, mixed>>, states: array<int, mixed>, cannot: bool}
+     */
+    public function rematch(string $matchId, int $userId): array
+    {
+        return $this->send($this->client()->post("/matches/{$matchId}/rematch", [
+            'userId' => $userId,
+        ]));
+    }
+
+    /**
      * Translate Node 4xx into a 422 ValidationException; throw on 5xx.
      *
      * @return array<string, mixed>

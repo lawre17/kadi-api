@@ -22,6 +22,8 @@ Route::middleware('auth:sanctum')->group(function () {
     // Leaving/forfeiting, and skipping a stalled player (turn timeout).
     Route::post('/matches/{matchId}/leave', [MatchPlayController::class, 'leave']);
     Route::post('/matches/{matchId}/timeout', [MatchPlayController::class, 'timeout']);
+    // Rematch: opt in after a finished game; auto-creates a fresh room.
+    Route::post('/matches/{matchId}/rematch', [MatchPlayController::class, 'rematch']);
     // Text chat: ephemeral, broadcast-only (not stored).
     Route::post('/matches/{matchId}/chat', [MatchPlayController::class, 'chat']);
     // Fetch the current authoritative state — used when a client opens the game
