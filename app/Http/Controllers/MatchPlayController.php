@@ -11,7 +11,9 @@ use App\Events\RematchUpdate;
 use App\Events\RoomStateUpdated;
 use App\Models\GameMatch;
 use App\Models\MatchPlayer;
+use App\Models\TournamentTable;
 use App\Services\NodeEngine;
+use App\Services\TournamentService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -233,6 +235,18 @@ class MatchPlayController extends Controller
     ): void {
         foreach ($states as $state) {
             $this->safeBroadcast(new GameStateUpdated($matchId, $state));
+        }
+
+        // Tournament tables don't pay per-match coins — they feed the bracket,
+        // which awards the prize pool at the end. Route the result there instead.
+        if ($finished && TournamentTable::where('match_id', $matchId)->exists()) {
+            GameMatch::where('id', $matchId)->update(['status' => 'finished']);
+            app(TournamentService::class)->recordTableResult(
+                $matchId,
+                $winnerUserId !== null ? (int) $winnerUserId : null,
+            );
+
+            return;
         }
 
         if ($finished && $winnerUserId !== null) {

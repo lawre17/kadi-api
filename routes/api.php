@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\MatchPlayController;
+use App\Http\Controllers\TournamentController;
 use Illuminate\Support\Facades\Route;
 
 // Public auth endpoints.
@@ -29,4 +30,12 @@ Route::middleware('auth:sanctum')->group(function () {
     // Fetch the current authoritative state — used when a client opens the game
     // (so it doesn't depend on catching the one-time initial broadcast).
     Route::get('/matches/{matchId}/state', [MatchPlayController::class, 'state']);
+
+    // Tournaments: a meta-structure over many matches. The host creates one,
+    // players join by code, and the server seats rounds + advances the bracket.
+    Route::post('/tournaments', [TournamentController::class, 'store']);
+    Route::post('/tournaments/{code}/join', [TournamentController::class, 'join']);
+    Route::post('/tournaments/{id}/start', [TournamentController::class, 'start']);
+    Route::post('/tournaments/{id}/leave', [TournamentController::class, 'leave']);
+    Route::get('/tournaments/{id}', [TournamentController::class, 'show']);
 });

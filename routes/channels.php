@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\MatchPlayer;
+use App\Models\TournamentPlayer;
 use Illuminate\Support\Facades\Broadcast;
 
 Broadcast::channel('App.Models.User.{id}', function ($user, $id) {
@@ -13,6 +14,14 @@ Broadcast::channel('App.Models.User.{id}', function ($user, $id) {
 // on /broadcasting/auth resolves and sets the request user.
 Broadcast::channel('match.{matchId}', function ($user, string $matchId) {
     return MatchPlayer::where('match_id', $matchId)
+        ->where('user_id', $user->id)
+        ->exists();
+});
+
+// Per-tournament private channel. Only entrants may subscribe — this carries
+// roster/round updates, per-round match-ready signals, and the final result.
+Broadcast::channel('tournament.{tournamentId}', function ($user, string $tournamentId) {
+    return TournamentPlayer::where('tournament_id', $tournamentId)
         ->where('user_id', $user->id)
         ->exists();
 });

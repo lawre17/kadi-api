@@ -80,6 +80,21 @@ class NodeEngine
     }
 
     /**
+     * Seat a fixed human roster (no AI) as a tournament table and start it.
+     *
+     * @param  array<int, array{userId: int, name: string}>  $players
+     * @param  array<string, mixed>|null  $settings
+     * @return array{matchId: string, code: string, states: array<int, mixed>, roster: array<int, array<string, mixed>>}
+     */
+    public function createTournamentMatch(array $players, ?array $settings = null): array
+    {
+        return $this->send($this->client()->post('/tournament-matches', array_filter([
+            'players' => $players,
+            'settings' => $settings,
+        ], fn ($v) => $v !== null)));
+    }
+
+    /**
      * @return array{states: array<int, mixed>, finished: bool, winnerUserId: string|null}
      */
     public function leave(string $matchId, int $userId): array
