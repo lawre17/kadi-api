@@ -211,7 +211,7 @@ class MatchPlayController extends Controller
             'winner' => $winnerUserId,
         ]);
 
-        $this->dispatchEngineResult($matchId, $states, $finished, $winnerUserId, $awardMatchWin);
+        $this->dispatchEngineResult($matchId, $states, $finished, $winnerUserId, $awardMatchWin, $result['ranking'] ?? []);
 
         return response()->json([
             'ok' => true,
@@ -232,6 +232,7 @@ class MatchPlayController extends Controller
         bool $finished,
         mixed $winnerUserId,
         AwardMatchWin $awardMatchWin,
+        array $ranking = [],
     ): void {
         foreach ($states as $state) {
             $this->safeBroadcast(new GameStateUpdated($matchId, $state));
@@ -239,11 +240,13 @@ class MatchPlayController extends Controller
 
         // Tournament tables don't pay per-match coins — they feed the bracket,
         // which awards the prize pool at the end. Route the result there instead.
+        // The finish order (ranking) drives league points / survival cuts.
         if ($finished && TournamentTable::where('match_id', $matchId)->exists()) {
             GameMatch::where('id', $matchId)->update(['status' => 'finished']);
             app(TournamentService::class)->recordTableResult(
                 $matchId,
                 $winnerUserId !== null ? (int) $winnerUserId : null,
+                $ranking,
             );
 
             return;
@@ -307,6 +310,7 @@ class MatchPlayController extends Controller
             (bool) ($result['finished'] ?? false),
             $result['winnerUserId'] ?? null,
             $awardMatchWin,
+            $result['ranking'] ?? [],
         );
 
         return response()->json(['ok' => true]);
@@ -342,6 +346,7 @@ class MatchPlayController extends Controller
                 (bool) ($result['finished'] ?? false),
                 $result['winnerUserId'] ?? null,
                 $awardMatchWin,
+                $result['ranking'] ?? [],
             );
         }
 

@@ -59,9 +59,12 @@ class TournamentService
      * match-finish hook. Serialized per-tournament so two tables finishing at
      * once can't double-advance the round.
      */
-    public function recordTableResult(string $matchId, ?int $winnerUserId): void
+    /**
+     * @param  array<int, int|string>  $ranking  seat userIds best -> worst from the engine
+     */
+    public function recordTableResult(string $matchId, ?int $winnerUserId, array $ranking = []): void
     {
-        $decision = DB::transaction(function () use ($matchId, $winnerUserId) {
+        $decision = DB::transaction(function () use ($matchId, $winnerUserId, $ranking) {
             $table = TournamentTable::where('match_id', $matchId)->lockForUpdate()->first();
             if (! $table || $table->status === 'finished') {
                 return null;
@@ -72,21 +75,14 @@ class TournamentService
             }
 
             $seated = array_map('intval', $table->player_user_ids ?? []);
-            // Resolve the winner; fall back to the first seat for the rare
-            // all-forfeit case where the engine reports no human winner.
-            $winner = $winnerUserId ?? ($seated[0] ?? null);
+            // Finish order over this table's seats; the engine's ranking, falling
+            // back to winner-first (then the rest) if it's missing.
+            $order = $this->orderSeats($seated, $ranking, $winnerUserId);
 
-            $table->update(['status' => 'finished', 'winner_user_id' => $winner]);
+            $table->update(['status' => 'finished', 'winner_user_id' => $order[0] ?? null]);
 
-            // Single-elimination: losers are out this round.
-            foreach ($seated as $uid) {
-                if ($uid === (int) $winner) {
-                    continue;
-                }
-                TournamentPlayer::where('tournament_id', $tournament->id)
-                    ->where('user_id', $uid)
-                    ->update(['status' => 'eliminated', 'eliminated_round' => $tournament->current_round]);
-            }
+            // Apply the format's rule (eliminations and/or points) to this table.
+            $this->applyFormatResult($tournament, $order);
 
             $roundDone = ! TournamentTable::where('tournament_id', $tournament->id)
                 ->where('round', $tournament->current_round)
@@ -113,11 +109,28 @@ class TournamentService
     }
 
     /**
-     * After a round completes: crown the champion if one player remains,
-     * otherwise seat the next round with the survivors.
+     * After a round completes, advance per format:
+     *  - league: play a fixed number of rounds (re-seating everyone), then the
+     *    points leader wins.
+     *  - bracket / survival: seat the survivors into the next round until one
+     *    player remains.
      */
     private function advanceRound(Tournament $tournament): void
     {
+        if ($tournament->format === 'league') {
+            $roundsTotal = (int) ($tournament->rounds_total ?? 3);
+            if ($tournament->current_round >= $roundsTotal) {
+                $this->finish($tournament, $this->leagueLeader($tournament));
+
+                return;
+            }
+            $all = $tournament->players()
+                ->pluck('user_id')->map(fn ($id) => (int) $id)->all();
+            $this->seatRound($tournament, $tournament->current_round + 1, $all);
+
+            return;
+        }
+
         $active = $tournament->players()
             ->where('status', 'active')
             ->pluck('user_id')
@@ -131,6 +144,95 @@ class TournamentService
         }
 
         $this->seatRound($tournament, $tournament->current_round + 1, $active);
+    }
+
+    /**
+     * Order a table's seats best -> worst using the engine ranking (filtered to
+     * the seats), appending any seat the ranking omitted, and falling back to
+     * winner-first if the ranking is empty.
+     *
+     * @param  array<int, int>  $seated
+     * @param  array<int, int|string>  $ranking
+     * @return array<int, int>
+     */
+    private function orderSeats(array $seated, array $ranking, ?int $winnerUserId): array
+    {
+        $ordered = [];
+        foreach ($ranking as $id) {
+            $id = (int) $id;
+            if (in_array($id, $seated, true) && ! in_array($id, $ordered, true)) {
+                $ordered[] = $id;
+            }
+        }
+        foreach ($seated as $id) {
+            if (! in_array($id, $ordered, true)) {
+                $ordered[] = $id;
+            }
+        }
+        if (! empty($ordered) && $winnerUserId !== null) {
+            // Trust the explicit winner as 1st even if the ranking disagreed.
+            $ordered = array_values(array_filter($ordered, fn ($id) => $id !== (int) $winnerUserId));
+            array_unshift($ordered, (int) $winnerUserId);
+        }
+
+        return $ordered;
+    }
+
+    /**
+     * Apply one table's finish order to the standings per format.
+     *
+     * @param  array<int, int>  $order  best -> worst
+     */
+    private function applyFormatResult(Tournament $tournament, array $order): void
+    {
+        $n = count($order);
+
+        if ($tournament->format === 'league') {
+            // Points by position: 1st gets n, last gets 1. Nobody is eliminated.
+            foreach ($order as $i => $uid) {
+                TournamentPlayer::where('tournament_id', $tournament->id)
+                    ->where('user_id', $uid)
+                    ->increment('points', $n - $i);
+            }
+
+            return;
+        }
+
+        if ($tournament->format === 'survival') {
+            // Top half advance; the bottom half drop.
+            $survivors = (int) ceil($n / 2);
+            foreach ($order as $i => $uid) {
+                if ($i >= $survivors) {
+                    $this->eliminate($tournament, $uid);
+                }
+            }
+
+            return;
+        }
+
+        // bracket: only the winner advances.
+        foreach ($order as $i => $uid) {
+            if ($i > 0) {
+                $this->eliminate($tournament, $uid);
+            }
+        }
+    }
+
+    private function eliminate(Tournament $tournament, int $userId): void
+    {
+        TournamentPlayer::where('tournament_id', $tournament->id)
+            ->where('user_id', $userId)
+            ->update(['status' => 'eliminated', 'eliminated_round' => $tournament->current_round]);
+    }
+
+    private function leagueLeader(Tournament $tournament): ?int
+    {
+        $top = $tournament->players()
+            ->orderByDesc('points')
+            ->orderBy('user_id')
+            ->first();
+
+        return $top ? (int) $top->user_id : null;
     }
 
     /**
@@ -233,6 +335,8 @@ class TournamentService
 
         $tournament->update(['status' => 'finished', 'winner_user_id' => $champUserId]);
 
+        $this->assignPlaces($tournament->fresh(), $champUserId);
+
         $champName = $champUserId
             ? (string) (User::whereKey($champUserId)->value('name') ?? 'Champion')
             : 'No one';
@@ -251,6 +355,28 @@ class TournamentService
             $this->standings($tournament->fresh()),
         ));
         $this->broadcastUpdate($tournament->fresh());
+    }
+
+    /**
+     * Assign final placings (the champion is already 1st). League ranks the rest
+     * by points; knockout/survival by how far they got (later elimination round =
+     * better place).
+     */
+    private function assignPlaces(Tournament $tournament, ?int $champUserId): void
+    {
+        $query = $tournament->players();
+        $ranked = $tournament->format === 'league'
+            ? $query->orderByDesc('points')->orderBy('user_id')->get()
+            : $query->orderByDesc('eliminated_round')->orderBy('user_id')->get();
+
+        $place = 1;
+        foreach ($ranked as $player) {
+            if ((int) $player->user_id === (int) $champUserId) {
+                continue; // already placed 1st
+            }
+            $place++;
+            $player->update(['place' => $place]);
+        }
     }
 
     /**
@@ -316,6 +442,40 @@ class TournamentService
                 ->values()
                 ->all(),
         ];
+    }
+
+    /**
+     * Every table across every round (oldest first) with seat names + winner —
+     * for the client's bracket view.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function bracket(Tournament $tournament): array
+    {
+        $tables = TournamentTable::where('tournament_id', $tournament->id)
+            ->orderBy('round')
+            ->orderBy('id')
+            ->get();
+
+        $ids = $tables
+            ->flatMap(fn (TournamentTable $t) => $t->player_user_ids ?? [])
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->all();
+        $names = User::whereIn('id', $ids)->pluck('name', 'id');
+
+        return $tables
+            ->map(fn (TournamentTable $t) => [
+                'round' => (int) $t->round,
+                'status' => $t->status,
+                'winnerUserId' => $t->winner_user_id ? (int) $t->winner_user_id : null,
+                'players' => array_map(
+                    fn ($uid) => ['userId' => (int) $uid, 'name' => $names[(int) $uid] ?? 'Player'],
+                    array_map('intval', $t->player_user_ids ?? []),
+                ),
+            ])
+            ->values()
+            ->all();
     }
 
     /**

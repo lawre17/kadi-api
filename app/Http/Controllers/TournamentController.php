@@ -28,22 +28,26 @@ class TournamentController extends Controller
             'format' => ['nullable', 'in:bracket,league,survival'],
             'tableSize' => ['nullable', 'integer', 'min:2', 'max:6'],
             'buyIn' => ['nullable', 'integer', 'min:0', 'max:1000000'],
+            'roundsTotal' => ['nullable', 'integer', 'min:2', 'max:10'],
             'settings' => ['nullable', 'array'],
         ]);
 
         $user = $request->user();
+        $format = $validated['format'] ?? 'bracket';
 
         // Create + seat host + charge atomically so an unaffordable buy-in rolls
         // the whole thing back (no orphaned tournament).
-        $tournament = DB::transaction(function () use ($validated, $user) {
+        $tournament = DB::transaction(function () use ($validated, $user, $format) {
             $t = Tournament::create([
                 'code' => $this->uniqueCode(),
-                'format' => $validated['format'] ?? 'bracket',
+                'format' => $format,
                 'status' => 'registering',
                 'host_user_id' => $user->id,
                 'buy_in' => $validated['buyIn'] ?? 0,
                 'prize_pool' => 0,
                 'table_size' => $validated['tableSize'] ?? 4,
+                // League plays a fixed number of rounds; others stop at a champion.
+                'rounds_total' => $format === 'league' ? ($validated['roundsTotal'] ?? 3) : null,
                 // Online tournaments are always unassisted (no card hints).
                 'settings' => array_merge(
                     (array) ($validated['settings'] ?? []),
@@ -187,6 +191,7 @@ class TournamentController extends Controller
         return response()->json([
             'tournament' => $this->service->summary($tournament),
             'myMatchId' => $this->service->currentMatchIdFor($tournament, (int) $user->id),
+            'tables' => $this->service->bracket($tournament),
         ]);
     }
 

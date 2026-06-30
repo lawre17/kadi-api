@@ -149,3 +149,31 @@ test('a single-elimination bracket runs to a champion across rounds', function (
 
     Event::assertDispatched(TournamentFinished::class);
 });
+
+test('the show endpoint returns the bracket + the callers current match', function () {
+    $users = User::factory()->count(2)->create();
+    $host = $users[0];
+    Event::fake([TournamentUpdate::class, TournamentMatchReady::class, TournamentFinished::class]);
+    fakeEngineTables();
+
+    Sanctum::actingAs($host);
+    $created = $this->postJson('/api/tournaments', ['tableSize' => 2]);
+    $id = $created->json('id');
+    $code = $created->json('code');
+
+    Sanctum::actingAs($users[1]);
+    $this->postJson("/api/tournaments/{$code}/join")->assertOk();
+
+    Sanctum::actingAs($host);
+    $this->postJson("/api/tournaments/{$id}/start")->assertOk();
+
+    $res = $this->getJson("/api/tournaments/{$id}")
+        ->assertOk()
+        ->assertJsonPath('tournament.status', 'running');
+
+    // One round-1 table seating both players, and the host's live match id.
+    expect($res->json('tables'))->toHaveCount(1);
+    expect($res->json('tables.0.round'))->toBe(1);
+    expect($res->json('tables.0.players'))->toHaveCount(2);
+    expect($res->json('myMatchId'))->not->toBeNull();
+});
