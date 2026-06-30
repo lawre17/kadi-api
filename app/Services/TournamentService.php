@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Actions\TournamentCoins;
 use App\Events\GameStateUpdated;
 use App\Events\TournamentFinished;
 use App\Events\TournamentMatchReady;
@@ -25,7 +26,10 @@ use Illuminate\Support\Facades\Log;
  */
 class TournamentService
 {
-    public function __construct(private readonly NodeEngine $engine) {}
+    public function __construct(
+        private readonly NodeEngine $engine,
+        private readonly TournamentCoins $coins,
+    ) {}
 
     /**
      * Begin a registering tournament: everyone goes active and round 1 is seated.
@@ -215,20 +219,16 @@ class TournamentService
      */
     private function finish(Tournament $tournament, ?int $champUserId): void
     {
-        $prize = (int) $tournament->prize_pool;
+        $prize = 0;
 
         if ($champUserId) {
             TournamentPlayer::where('tournament_id', $tournament->id)
                 ->where('user_id', $champUserId)
                 ->update(['status' => 'champion', 'place' => 1]);
 
-            $champ = User::find($champUserId);
-            if ($champ) {
-                if ($prize > 0) {
-                    $champ->increment('coins', $prize);
-                }
-                $champ->increment('wins');
-            }
+            // Pay out the escrowed prize pool (idempotent) + credit a win.
+            $prize = $this->coins->payout($tournament, $champUserId);
+            User::whereKey($champUserId)->increment('wins');
         }
 
         $tournament->update(['status' => 'finished', 'winner_user_id' => $champUserId]);

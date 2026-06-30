@@ -6,7 +6,7 @@ use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
-#[Fillable(['user_id', 'match_id', 'amount', 'reason'])]
+#[Fillable(['user_id', 'match_id', 'tournament_id', 'amount', 'reason'])]
 class CoinTransaction extends Model
 {
     protected function casts(): array
@@ -24,5 +24,10 @@ class CoinTransaction extends Model
     public function match(): BelongsTo
     {
         return $this->belongsTo(GameMatch::class, 'match_id');
+    }
+
+    public function tournament(): BelongsTo
+    {
+        return $this->belongsTo(Tournament::class);
     }
 }

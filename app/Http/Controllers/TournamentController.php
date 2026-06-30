@@ -2,52 +2,65 @@
 
 namespace App\Http\Controllers;
 
+use App\Actions\TournamentCoins;
 use App\Models\Tournament;
 use App\Models\TournamentPlayer;
 use App\Services\TournamentService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class TournamentController extends Controller
 {
-    public function __construct(private readonly TournamentService $service) {}
+    public function __construct(
+        private readonly TournamentService $service,
+        private readonly TournamentCoins $coins,
+    ) {}
 
     /**
-     * Create a tournament. The creator becomes the host and first entrant.
-     * Phase 1 is free to enter; coin buy-ins land in a later phase, so buy_in is
-     * forced to 0 here regardless of the request.
+     * Create a tournament. The creator becomes the host and first entrant, and
+     * pays the buy-in (escrowed into the prize pool).
      */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
             'format' => ['nullable', 'in:bracket,league,survival'],
             'tableSize' => ['nullable', 'integer', 'min:2', 'max:6'],
+            'buyIn' => ['nullable', 'integer', 'min:0', 'max:1000000'],
             'settings' => ['nullable', 'array'],
         ]);
 
         $user = $request->user();
 
-        $tournament = Tournament::create([
-            'code' => $this->uniqueCode(),
-            'format' => $validated['format'] ?? 'bracket',
-            'status' => 'registering',
-            'host_user_id' => $user->id,
-            'buy_in' => 0,
-            'prize_pool' => 0,
-            'table_size' => $validated['tableSize'] ?? 4,
-            // Online tournaments are always unassisted (no card hints).
-            'settings' => array_merge(
-                (array) ($validated['settings'] ?? []),
-                ['assistedMode' => false],
-            ),
-        ]);
+        // Create + seat host + charge atomically so an unaffordable buy-in rolls
+        // the whole thing back (no orphaned tournament).
+        $tournament = DB::transaction(function () use ($validated, $user) {
+            $t = Tournament::create([
+                'code' => $this->uniqueCode(),
+                'format' => $validated['format'] ?? 'bracket',
+                'status' => 'registering',
+                'host_user_id' => $user->id,
+                'buy_in' => $validated['buyIn'] ?? 0,
+                'prize_pool' => 0,
+                'table_size' => $validated['tableSize'] ?? 4,
+                // Online tournaments are always unassisted (no card hints).
+                'settings' => array_merge(
+                    (array) ($validated['settings'] ?? []),
+                    ['assistedMode' => false],
+                ),
+            ]);
 
-        TournamentPlayer::create([
-            'tournament_id' => $tournament->id,
-            'user_id' => $user->id,
-            'status' => 'registered',
-        ]);
+            TournamentPlayer::create([
+                'tournament_id' => $t->id,
+                'user_id' => $user->id,
+                'status' => 'registered',
+            ]);
+
+            $this->coins->charge($user->id, $t);
+
+            return $t;
+        });
 
         $summary = $this->service->summary($tournament->fresh());
         $this->service->broadcast($tournament->fresh());
@@ -70,10 +83,17 @@ class TournamentController extends Controller
             return response()->json(['message' => 'This tournament has already started.'], 409);
         }
 
-        TournamentPlayer::firstOrCreate(
-            ['tournament_id' => $tournament->id, 'user_id' => $user->id],
-            ['status' => 'registered'],
-        );
+        // Charge only on a genuinely new entry, atomically with seating so a
+        // failed charge (insufficient coins → 422) doesn't seat an unpaid player.
+        DB::transaction(function () use ($tournament, $user) {
+            $player = TournamentPlayer::firstOrCreate(
+                ['tournament_id' => $tournament->id, 'user_id' => $user->id],
+                ['status' => 'registered'],
+            );
+            if ($player->wasRecentlyCreated) {
+                $this->coins->charge($user->id, $tournament);
+            }
+        });
 
         $this->service->broadcast($tournament->fresh());
 
@@ -81,7 +101,9 @@ class TournamentController extends Controller
     }
 
     /**
-     * Leave a tournament that hasn't started yet.
+     * Leave a tournament that hasn't started yet. The host leaving cancels the
+     * whole thing and refunds everyone; anyone else just gets their own buy-in
+     * back. (Leaving once it's running is a forfeit and isn't refunded.)
      */
     public function leave(Request $request, string $id): JsonResponse
     {
@@ -91,10 +113,25 @@ class TournamentController extends Controller
         if (! $tournament) {
             return response()->json(['message' => 'Tournament not found.'], 404);
         }
+
         if ($tournament->status === 'registering') {
-            TournamentPlayer::where('tournament_id', $tournament->id)
-                ->where('user_id', $user->id)
-                ->delete();
+            $isHost = (int) $tournament->host_user_id === (int) $user->id;
+
+            if ($isHost) {
+                // Cancel: refund all, then mark finished with no champion.
+                $this->coins->refundAll($tournament);
+                $tournament->update(['status' => 'finished', 'winner_user_id' => null]);
+            } else {
+                DB::transaction(function () use ($tournament, $user) {
+                    $deleted = TournamentPlayer::where('tournament_id', $tournament->id)
+                        ->where('user_id', $user->id)
+                        ->delete();
+                    if ($deleted) {
+                        $this->coins->refund((int) $user->id, $tournament);
+                    }
+                });
+            }
+
             $this->service->broadcast($tournament->fresh());
         }
 
