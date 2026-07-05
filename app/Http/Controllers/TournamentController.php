@@ -28,7 +28,7 @@ class TournamentController extends Controller
             'format' => ['nullable', 'in:bracket,league,survival'],
             'tableSize' => ['nullable', 'integer', 'min:2', 'max:6'],
             'buyIn' => ['nullable', 'integer', 'min:0', 'max:1000000'],
-            'roundsTotal' => ['nullable', 'integer', 'min:2', 'max:10'],
+            'roundsTotal' => ['nullable', 'integer', 'min:2', 'max:15'],
             'settings' => ['nullable', 'array'],
         ]);
 

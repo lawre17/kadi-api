@@ -119,6 +119,38 @@ test('league plays a fixed number of rounds and the points leader wins', functio
     expect($champ->status)->toBe('champion');
 });
 
+test('league supports up to 15 rounds', function () {
+    $id = runTournament($this, [
+        'players' => 4,
+        'create' => ['format' => 'league', 'tableSize' => 2, 'roundsTotal' => 15],
+    ]);
+
+    $t = Tournament::find($id);
+    expect($t->status)->toBe('finished');
+    expect($t->current_round)->toBe(15);
+    expect($t->winner_user_id)->not->toBeNull();
+
+    // 15 rounds × 2 tables of 2, each table awards 2+1 = 3 points → 90 total.
+    $players = TournamentPlayer::where('tournament_id', $id)->get();
+    expect((int) $players->sum('points'))->toBe(90);
+    expect($players->where('status', 'eliminated')->count())->toBe(0);
+});
+
+test('roundsTotal above 15 is rejected', function () {
+    $host = User::factory()->create(['coins' => 1000]);
+    Sanctum::actingAs($host);
+
+    $this->postJson('/api/tournaments', [
+        'format' => 'league',
+        'roundsTotal' => 16,
+    ])->assertStatus(422)->assertJsonValidationErrors('roundsTotal');
+
+    $this->postJson('/api/tournaments', [
+        'format' => 'league',
+        'roundsTotal' => 15,
+    ])->assertCreated();
+});
+
 test('survival drops the bottom half each round until one remains', function () {
     $id = runTournament($this, [
         'players' => 6,
