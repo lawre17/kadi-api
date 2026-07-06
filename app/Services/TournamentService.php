@@ -119,6 +119,16 @@ class TournamentService
     {
         if ($tournament->format === 'league') {
             $roundsTotal = (int) ($tournament->rounds_total ?? 3);
+
+            // Early clinch: end the moment the leader is mathematically
+            // uncatchable — even if a rival wins every remaining game and the
+            // leader wins none. Skips the dead-rubber rounds.
+            if ($champUserId = $this->leagueClinched($tournament, $roundsTotal)) {
+                $this->finish($tournament, $champUserId);
+
+                return;
+            }
+
             if ($tournament->current_round >= $roundsTotal) {
                 $this->finish($tournament, $this->leagueLeader($tournament));
 
@@ -188,11 +198,13 @@ class TournamentService
         $n = count($order);
 
         if ($tournament->format === 'league') {
-            // Points by position: 1st gets n, last gets 1. Nobody is eliminated.
-            foreach ($order as $i => $uid) {
+            // Winner-only: the table winner earns 3 points, everyone else 0.
+            // Nobody is eliminated.
+            $winner = $order[0] ?? null;
+            if ($winner !== null) {
                 TournamentPlayer::where('tournament_id', $tournament->id)
-                    ->where('user_id', $uid)
-                    ->increment('points', $n - $i);
+                    ->where('user_id', $winner)
+                    ->increment('points', 3);
             }
 
             return;
@@ -233,6 +245,39 @@ class TournamentService
             ->first();
 
         return $top ? (int) $top->user_id : null;
+    }
+
+    /**
+     * The league champion if the leader is already mathematically uncatchable,
+     * else null. A single rival can win at most one game (3 points) per round,
+     * so the most that anyone can still gain is 3 × the remaining rounds. If the
+     * leader's margin over the runner-up already exceeds that, no rival can
+     * catch — or even tie — them, so the title is settled early. A tie at the
+     * top returns null: the race is still on. Ordered like leagueLeader() so an
+     * early finish names the same champion the final round would.
+     */
+    private function leagueClinched(Tournament $tournament, int $roundsTotal): ?int
+    {
+        $roundsRemaining = $roundsTotal - (int) $tournament->current_round;
+        if ($roundsRemaining < 1) {
+            return null;
+        }
+
+        $top = $tournament->players()
+            ->orderByDesc('points')
+            ->orderBy('user_id')
+            ->take(2)
+            ->get();
+
+        if ($top->count() < 2) {
+            return null;
+        }
+
+        $lead = (int) $top[0]->points - (int) $top[1]->points;
+
+        // Strict >: if the runner-up could win every remaining game and merely
+        // tie the leader, the title isn't settled yet.
+        return $lead > 3 * $roundsRemaining ? (int) $top[0]->user_id : null;
     }
 
     /**
